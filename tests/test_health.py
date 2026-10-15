@@ -8,6 +8,12 @@ from app import main
 
 
 class HealthEndpointTests(unittest.TestCase):
+    def test_mongo_selection_timeout_is_below_readiness_deadline(self):
+        self.assertEqual(
+            main.client.options.server_selection_timeout,
+            5.0,
+        )
+
     def test_returns_success_when_mongodb_ping_succeeds(self):
         mongo_client = Mock()
         with patch.object(main, "client", mongo_client):

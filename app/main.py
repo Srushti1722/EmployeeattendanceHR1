@@ -21,7 +21,10 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 
 load_dotenv()
 
-client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017"))
+client = MongoClient(
+    os.getenv("MONGO_URI", "mongodb://localhost:27017"),
+    serverSelectionTimeoutMS=5_000,
+)
 db = client[os.getenv("MONGO_DB", "attendance_db")]
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -1315,34 +1318,15 @@ def _department_trend_pipeline(
     return [
         {"$match": {"department": department}},
         {
-            "$group": {
-                "_id": None,
-                "employees": {
-                    "$push": {
-                        "emp_code": "$emp_code",
-                        "joined_on": "$joined_on",
-                    }
-                },
-            }
-        },
-        {
             "$lookup": {
                 "from": "attendance_logs",
-                "let": {
-                    "employee_codes": {
-                        "$map": {
-                            "input": "$employees",
-                            "as": "employee",
-                            "in": "$$employee.emp_code",
-                        }
-                    }
-                },
+                "let": {"employee_code": "$emp_code"},
                 "pipeline": [
                     {
                         "$match": {
                             "$expr": {
                                 "$and": [
-                                    {"$in": ["$emp_code", "$$employee_codes"]},
+                                    {"$eq": ["$emp_code", "$$employee_code"]},
                                     {"$gte": ["$date", start.isoformat()]},
                                     {"$lte": ["$date", end.isoformat()]},
                                 ]
@@ -1444,18 +1428,16 @@ def _department_trend_pipeline(
                                                 ]
                                             },
                                             "day_headcount": {
-                                                "$size": {
-                                                    "$filter": {
-                                                        "input": "$employees",
-                                                        "as": "employee",
-                                                        "cond": {
-                                                            "$lte": [
-                                                                "$$employee.joined_on",
-                                                                "$$day_date",
-                                                            ]
-                                                        },
-                                                    }
-                                                }
+                                                "$cond": [
+                                                    {
+                                                        "$lte": [
+                                                            "$joined_on",
+                                                            "$$day_date",
+                                                        ]
+                                                    },
+                                                    1,
+                                                    0,
+                                                ]
                                             },
                                         },
                                         "in": {
@@ -1484,57 +1466,11 @@ def _department_trend_pipeline(
                                                     "date": "$$day_date",
                                                     "is_working_day": "$$working_day",
                                                     "headcount": "$$day_headcount",
-                                                    "present_count": {
-                                                        "$divide": ["$$present_units", 2]
-                                                    },
+                                                    "present_half_day_units": "$$present_units",
                                                     "late_count": {
                                                         "$ifNull": [
                                                             "$$day_logs.late_count",
                                                             0,
-                                                        ]
-                                                    },
-                                                    "attendance_rate": {
-                                                        "$cond": [
-                                                            {
-                                                                "$and": [
-                                                                    "$$working_day",
-                                                                    {
-                                                                        "$gt": [
-                                                                            "$$day_headcount",
-                                                                            0,
-                                                                        ]
-                                                                    },
-                                                                ]
-                                                            },
-                                                            {
-                                                                "$divide": [
-                                                                    {
-                                                                        "$floor": {
-                                                                            "$divide": [
-                                                                                {
-                                                                                    "$add": [
-                                                                                        {
-                                                                                            "$multiply": [
-                                                                                                "$$present_units",
-                                                                                                10000,
-                                                                                            ]
-                                                                                        },
-                                                                                        "$$day_headcount",
-                                                                                    ]
-                                                                                },
-                                                                                {
-                                                                                    "$multiply": [
-                                                                                        "$$day_headcount",
-                                                                                        2,
-                                                                                    ]
-                                                                                },
-                                                                            ]
-                                                                        }
-                                                                    },
-                                                                    10000,
-                                                                ]
-                                                            },
-                                                            None,
                                                         ]
                                                     },
                                                 },
@@ -1551,19 +1487,60 @@ def _department_trend_pipeline(
         {"$unwind": "$items"},
         {"$replaceRoot": {"newRoot": "$items"}},
         {
+            "$group": {
+                "_id": "$date",
+                "date": {"$first": "$date"},
+                "is_working_day": {"$first": "$is_working_day"},
+                "headcount": {"$sum": "$headcount"},
+                "present_half_day_units": {"$sum": "$present_half_day_units"},
+                "late_count": {"$sum": "$late_count"},
+            }
+        },
+        {
             "$set": {
                 "_attendance_rate_units": {
                     "$cond": [
-                        {"$eq": ["$attendance_rate", None]},
-                        None,
                         {
-                            "$round": [
-                                {"$multiply": ["$attendance_rate", 10000]},
-                                0,
+                            "$and": [
+                                "$is_working_day",
+                                {"$gt": ["$headcount", 0]},
                             ]
                         },
+                        {
+                            "$floor": {
+                                "$divide": [
+                                    {
+                                        "$add": [
+                                            {
+                                                "$multiply": [
+                                                    "$present_half_day_units",
+                                                    10000,
+                                                ]
+                                            },
+                                            "$headcount",
+                                        ]
+                                    },
+                                    {"$multiply": ["$headcount", 2]},
+                                ]
+                            }
+                        },
+                        None,
                     ]
                 }
+            }
+        },
+        {
+            "$set": {
+                "present_count": {
+                    "$divide": ["$present_half_day_units", 2]
+                },
+                "attendance_rate": {
+                    "$cond": [
+                        {"$eq": ["$_attendance_rate_units", None]},
+                        None,
+                        {"$divide": ["$_attendance_rate_units", 10000]},
+                    ]
+                },
             }
         },
         {
@@ -1620,7 +1597,14 @@ def _department_trend_pipeline(
                 }
             }
         },
-        {"$unset": ["_attendance_rate_units", "_rate_sum_units", "_rate_count"]},
+        {
+            "$unset": [
+                "present_half_day_units",
+                "_attendance_rate_units",
+                "_rate_sum_units",
+                "_rate_count",
+            ]
+        },
         {"$sort": {"date": 1}},
         {
             "$group": {

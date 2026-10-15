@@ -169,6 +169,16 @@ class AnalyticsRouteTests(unittest.TestCase):
         pipeline = database.employees.pipeline
         self.assertEqual(pipeline[0], {"$match": {"department": "Engineering"}})
         self.assertEqual(
+            pipeline[1]["$lookup"]["pipeline"][0]["$match"]["$expr"]["$and"][0],
+            {"$eq": ["$emp_code", "$$employee_code"]},
+        )
+        self.assertFalse(
+            any(
+                stage.get("$group", {}).get("employees", {}).get("$push")
+                for stage in pipeline
+            )
+        )
+        self.assertEqual(
             next(nested_values(pipeline, "$range")),
             [0, 3],
         )
@@ -177,7 +187,17 @@ class AnalyticsRouteTests(unittest.TestCase):
             list(nested_values(pipeline, "documents")),
         )
         self.assertTrue(list(nested_values(pipeline, "$dateAdd")))
-        self.assertIn(["$$employee.joined_on", "$$day_date"], list(nested_values(pipeline, "$lte")))
+        self.assertIn(["$joined_on", "$$day_date"], list(nested_values(pipeline, "$lte")))
+        daily_group = next(
+            stage["$group"]
+            for stage in pipeline
+            if "$group" in stage and stage["$group"].get("_id") == "$date"
+        )
+        self.assertEqual(daily_group["headcount"], {"$sum": "$headcount"})
+        self.assertEqual(
+            daily_group["present_half_day_units"],
+            {"$sum": "$present_half_day_units"},
+        )
         self.assertIn(
             ["$status", ["PRESENT", "WFH", "ON_DUTY"]],
             list(nested_values(pipeline, "$in")),
@@ -241,6 +261,61 @@ class AnalyticsRouteTests(unittest.TestCase):
         self.assertEqual(response["endpoint"], "attendance_list")
         self.assertEqual(response["collection"], "attendance_logs")
         self.assertIn("executionStats", response["explain"])
+
+    def test_explain_analytics_uses_endpoint_pipeline_builders(self):
+        date_from = date(2026, 6, 1)
+        date_to = date(2026, 6, 30)
+        cases = (
+            (
+                "employee_monthly",
+                {"emp_code": "EMP0001", "month": "2026-06"},
+                "employees",
+                main._employee_monthly_pipeline("EMP0001", "2026-06"),
+            ),
+            (
+                "department_summary",
+                {"month": "2026-06", "department": "Engineering"},
+                "employees",
+                main._department_summary_pipeline("2026-06", "Engineering"),
+            ),
+            (
+                "late_leaderboard",
+                {"month": "2026-06", "limit": 5, "department": "Engineering"},
+                "attendance_logs",
+                main._late_leaderboard_pipeline(
+                    "2026-06",
+                    5,
+                    "Engineering",
+                ),
+            ),
+            (
+                "department_trend",
+                {
+                    "department": "Engineering",
+                    "from_date": date_from,
+                    "to_date": date_to,
+                    "month": None,
+                },
+                "employees",
+                main._department_trend_pipeline(
+                    "Engineering",
+                    date_from,
+                    date_to,
+                ),
+            ),
+        )
+
+        for endpoint, parameters, collection, pipeline in cases:
+            with self.subTest(endpoint=endpoint):
+                database = FakeDatabase()
+                with patch.object(main, "db", database):
+                    response = main.explain_endpoint(endpoint, **parameters)
+
+                explained = database.command_argument["explain"]
+                self.assertEqual(database.command_argument["verbosity"], "executionStats")
+                self.assertEqual(explained["aggregate"], collection)
+                self.assertEqual(explained["pipeline"], pipeline)
+                self.assertEqual(response["collection"], collection)
 
     def test_explain_response_encodes_bson_metadata_as_extended_json(self):
         database = FakeDatabase(

@@ -1,11 +1,11 @@
 # Engineering decisions
 
-1. **Indexes.** Unique `employees.emp_code` and `(emp_code, date)` indexes enforce natural keys. `(date desc, emp_code asc)` supports attendance sorting; `joined_on` serves the summary's unfiltered date match; `(department, joined_on)` supports department filters. I rejected standalone `status`: it has low selectivity and the list is date-sorted.
+1. **Indexes.** Startup declares five indexes: unique employee code and attendance `(emp_code, date)` for natural-key integrity; attendance `(date desc, emp_code asc)` for listing; employee `joined_on` and `(department, joined_on)` for summary matching. A fake test checks repeated startup declarations; real selection needs live explain output.
 
-2. **Punch-in race.** Both requests may pass the initial lookup. The unique compound index allows one insert; MongoDB rejects the other with `DuplicateKeyError`. The insert handler maps it to 409. The lookup improves the usual response, but the index is the integrity guarantee.
+2. **Concurrent punch-ins.** Both requests may pass the lookup, but the unique `(emp_code, date)` index allows one insert. The loser gets `DuplicateKeyError` and returns 409. The pre-check improves the common response; the index is the integrity guarantee. Concurrency tests use fakes, not live MongoDB.
 
-3. **Ties.** MongoDB competition rank gives tied totals the same rank and skips the next rank. The limit is applied afterward, so every employee tied at or above the cutoff rank is returned.
+3. **Leaderboard ties.** MongoDB competition rank is applied before the limit. All people tied at the cutoff rank are returned, so the response can exceed `limit`.
 
-4. **Headcount.** The summary starts with employees joined by month end, then looks up attendance. Employees with no matching logs remain and count toward headcount.
+4. **Employees without logs.** Summary starts from employees joined by month end and looks up logs. No-match employees remain in headcount and contribute zero presence.
 
-5. **100x scale.** I would test representative data and redesign trend aggregation to avoid large department arrays. `explain` helps inspect scans and indexes, but plans must be verified on the target dataset.
+5. **100x scale.** Trend avoids one department-wide employee array and bounds each employee lookup to 92 days, but still processes each eligible employee. I would benchmark representative data and inspect execution statistics before considering materialized daily summaries. No 100,000-record or 100x benchmark has run.

@@ -67,9 +67,22 @@ Analytics are calculated using MongoDB aggregation pipelines.
 
 Unit tests use mocks and fakes for some database operations. Passing the unit tests alone does not establish that every operation works against a live MongoDB database or that indexes are selected for every query and dataset.
 
+## Verify a configured MongoDB
+
+With `MONGO_URI` and `MONGO_DB` configured in the same PowerShell terminal, run:
+
+```powershell
+python .\verify_mongodb.py
+```
+
+The script checks connectivity, duplicate natural keys, required indexes, the application's actual analytics
+aggregations, `/health`, and all five explain routes. It does not insert, update, or delete employee or attendance
+records. It may create missing indexes, which changes database index metadata. An explain check passes only when the
+returned plan contains `IXSCAN` and no `COLLSCAN`; this result depends on the live database and its data.
+
 ## Additional documentation
 
-- [REVIEW.md](./REVIEW.md): Findings from reviewing the starter code and the fixes made.
+- [REVIEW.md](./REVIEW.md): Evidence-based implementation review and disclosed verification limits.
 - [DECISIONS.md](./DECISIONS.md): Implementation decisions and answers to the assignment questions.
 - [openapi.yaml](./openapi.yaml): API contract.
 - [DATA_MODEL.md](./DATA_MODEL.md): MongoDB collections and document structure.

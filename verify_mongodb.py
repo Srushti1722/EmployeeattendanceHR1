@@ -1,4 +1,4 @@
-"""Read-only verification of the application's MongoDB indexes and analytics."""
+"""Non-destructive verification of the application's MongoDB indexes and analytics."""
 
 import asyncio
 import json
@@ -69,12 +69,15 @@ def report_explain(base_url: str, endpoint: str, **parameters) -> bool:
         stages: set[str] = set()
         indexes: set[str] = set()
         collect_plan_stages(result["explain"], stages, indexes)
+        uses_index = "IXSCAN" in stages
+        avoids_collection_scan = "COLLSCAN" not in stages
+        passed = uses_index and avoids_collection_scan
         print(
-            f"PASS GET /admin/explain/{endpoint}: "
-            f"stages={sorted(stages)}, indexes={sorted(indexes)}, "
-            f"index_used={bool(indexes)}"
+            f"{'PASS' if passed else 'FAIL'} GET /admin/explain/{endpoint} "
+            f"HTTP 200: stages={sorted(stages)}, indexes={sorted(indexes)}, "
+            f"IXSCAN={uses_index}, COLLSCAN={'COLLSCAN' in stages}"
         )
-        return True
+        return passed
     except HTTPError as exc:
         print(f"FAIL GET /admin/explain/{endpoint}: HTTP {exc.code}")
         return False
@@ -127,7 +130,7 @@ def start_local_api() -> tuple[subprocess.Popen, str] | None:
     return None
 
 
-def run_read_only_checks() -> int:
+def run_non_destructive_checks() -> int:
     if not os.getenv("MONGO_URI") or not os.getenv("MONGO_DB"):
         print("BLOCKED: MONGO_URI or MONGO_DB is absent in this process.")
         print(
@@ -206,7 +209,7 @@ def run_read_only_checks() -> int:
         if employee is None:
             print(
                 "INFO: employees is empty; using a non-matching employee code "
-                "and department for read-only checks."
+                "and department for read-only queries."
             )
         anchor_text = (
             attendance["date"]
@@ -345,4 +348,4 @@ def run_read_only_checks() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(run_read_only_checks())
+    sys.exit(run_non_destructive_checks())
